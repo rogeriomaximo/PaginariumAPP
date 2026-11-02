@@ -1,0 +1,67 @@
+{
+  "expo": {
+    "name": "Paginarium",
+    "slug": "paginarium",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "web": {
+      "favicon": "./assets/favicon-32x32.png",
+      "name": "Paginarium",
+      "shortName": "Paginarium",
+      "lang": "pt-BR",
+      "themeColor": "#0c9dc2",
+      "backgroundColor": "#e9eaec",
+      "display": "standalone",
+      "orientation": "portrait",
+      "bundler": "metro",
+      "output": "single",
+      "icons": [
+        {
+          "src": "./assets/icon.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        },
+        {
+          "src": "./assets/icon.png",
+          "sizes": "512x512",
+          "type": "image/png"
+        }
+      ]
+    },
+    "updates": {
+      "enabled": false
+    },
+    "plugins": [
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/Paginarium_Android.png",
+          "resizeMode": "contain",
+          "backgroundColor": "#FFFFFF"
+        }
+      ],
+      "expo-secure-store"
+    ],
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#FFFFFF",
+        "backgroundImage": "./assets/Paginarium_Android.png",
+        "foregroundImage": "./assets/Paginarium_icon.png"
+      },
+      "package": "com.paginarium.app"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "7465bb3a-2cc7-44cb-9f75-84a45c6faa5e"
+      }
+    },
+    "splash": {
+      "image": "./assets/Paginarium_Android.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#FFFFFF"
+    },
+    "owner": "startzen"
+  }
+}

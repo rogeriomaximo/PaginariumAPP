@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#0c9dc2" />
+    <meta name="description" content="Paginarium" />
+
+    <!-- PWA -->
+    <link rel="manifest" href="/manifest.json" />
+    <link rel="icon" href="/favicon.ico" />
+    <link rel="apple-touch-icon" href="/assets/icon.png" />
+
+    <title>Paginarium</title>
+
+    <!-- Registrar Service Worker -->
+    <script>
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', function () {
+          navigator.serviceWorker.register('/sw.js')
+            .then(function(reg) {
+              console.log('Service Worker registrado:', reg.scope);
+            })
+            .catch(function(err) {
+              console.log('Service Worker erro:', err);
+            });
+        });
+      }
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>
