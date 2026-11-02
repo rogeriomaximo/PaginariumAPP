@@ -1,0 +1,20 @@
+{
+  "name": "Paginarium",
+  "short_name": "Paginarium",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#0c9dc2",
+  "icons": [
+    {
+      "src": "/assets/assets/icon.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/assets/assets/icon.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
