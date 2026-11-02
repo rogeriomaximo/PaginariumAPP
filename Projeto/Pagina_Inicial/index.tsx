@@ -27,7 +27,6 @@ import {
 import { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { SafeAreaView } from "react-native-safe-area-context";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { usePWAInstall } from "../hooks/usePWAInstall";
 import CapaLivro from "../CapaLivro/index";
 
 import {
@@ -64,9 +63,11 @@ const MESES_MAXIMO = 24;
 
 // O hook de instalação PWA só existe na web.
 // No Android/iOS usamos um substituto que não faz nada.
-const useInstalacaoPWA =
+// O hook é carregado com require só na web, para que o código web
+// nem seja executado ao abrir o app no Android.
+const useInstalacaoPWA: () => { isInstallable: boolean; install: () => void } =
   Platform.OS === "web"
-    ? usePWAInstall
+    ? require("../hooks/usePWAInstall").usePWAInstall
     : () => ({ isInstallable: false, install: () => {} });
 
 // =====================================================

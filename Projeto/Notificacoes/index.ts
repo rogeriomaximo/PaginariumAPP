@@ -1,17 +1,16 @@
 import { Platform } from "react-native";
 
-// Carregado só no celular: na web o módulo emite avisos e não agenda nada.
-const Notifications: typeof import("expo-notifications") =
-  Platform.OS !== "web" ? require("expo-notifications") : (null as any);
-
 // Lembretes locais (agendados no próprio aparelho).
-// Funcionam no Android/iOS. Na web, as funções não fazem nada.
+// Funcionam no Android/iOS. Na web, ou se o módulo nativo não estiver
+// incluído no build, as funções simplesmente não fazem nada (o app não cai).
 
 export interface AluguelAtivo {
   livro_id: number;
   nome?: string;
   data_fim?: string; // "YYYY-MM-DD" (ou ISO; só os 10 primeiros caracteres importam)
 }
+
+type ModuloNotificacoes = typeof import("expo-notifications");
 
 const CANAL = "paginarium";
 const ehNativo = Platform.OS !== "web";
@@ -20,15 +19,26 @@ const ehNativo = Platform.OS !== "web";
 const HORA_DEVOLUCAO = 9; // 09:00
 const HORA_LEITURA = 20; // 20:00 todos os dias
 
+// Carrega o módulo nativo dentro de try/catch: se o build não tiver
+// o expo-notifications, o app abre normalmente, só sem lembretes.
+let Notifications: ModuloNotificacoes | null = null;
+
 if (ehNativo) {
-  Notifications.setNotificationHandler({
-    handleNotification: async () => ({
-      shouldPlaySound: true,
-      shouldSetBadge: false,
-      shouldShowBanner: true,
-      shouldShowList: true,
-    }),
-  });
+  try {
+    Notifications = require("expo-notifications") as ModuloNotificacoes;
+
+    Notifications.setNotificationHandler({
+      handleNotification: async () => ({
+        shouldPlaySound: true,
+        shouldSetBadge: false,
+        shouldShowBanner: true,
+        shouldShowList: true,
+      }),
+    });
+  } catch (erro) {
+    console.log("expo-notifications indisponível neste build:", erro);
+    Notifications = null;
+  }
 }
 
 function parseData(dataFim: string): Date {
@@ -49,22 +59,23 @@ function comHora(data: Date, hora: number): Date {
 }
 
 export async function prepararNotificacoes(): Promise<boolean> {
-  if (!ehNativo) return false;
+  const N = Notifications;
+  if (!N) return false;
 
   try {
     if (Platform.OS === "android") {
-      await Notifications.setNotificationChannelAsync(CANAL, {
+      await N.setNotificationChannelAsync(CANAL, {
         name: "Paginarium",
-        importance: Notifications.AndroidImportance.HIGH,
+        importance: N.AndroidImportance.HIGH,
         vibrationPattern: [0, 250, 250, 250],
       });
     }
 
-    const atual = await Notifications.getPermissionsAsync();
+    const atual = await N.getPermissionsAsync();
     let status = atual.status;
 
     if (status !== "granted" && atual.canAskAgain) {
-      status = (await Notifications.requestPermissionsAsync()).status;
+      status = (await N.requestPermissionsAsync()).status;
     }
 
     return status === "granted";
@@ -75,19 +86,21 @@ export async function prepararNotificacoes(): Promise<boolean> {
 }
 
 export async function cancelarLembretes() {
-  if (!ehNativo) return;
+  const N = Notifications;
+  if (!N) return;
+
   try {
-    await Notifications.cancelAllScheduledNotificationsAsync();
+    await N.cancelAllScheduledNotificationsAsync();
   } catch (erro) {
     console.log("Erro ao cancelar lembretes:", erro);
   }
 }
 
-async function agendar(titulo: string, corpo: string, quando: Date) {
-  await Notifications.scheduleNotificationAsync({
+async function agendar(N: ModuloNotificacoes, titulo: string, corpo: string, quando: Date) {
+  await N.scheduleNotificationAsync({
     content: { title: titulo, body: corpo, sound: true },
     trigger: {
-      type: Notifications.SchedulableTriggerInputTypes.DATE,
+      type: N.SchedulableTriggerInputTypes.DATE,
       date: quando,
       channelId: CANAL,
     },
@@ -97,13 +110,14 @@ async function agendar(titulo: string, corpo: string, quando: Date) {
 // Reagenda TODOS os lembretes com base nos aluguéis ativos.
 // Chame sempre que a lista de aluguéis for carregada.
 export async function sincronizarLembretes(alugueis: AluguelAtivo[]) {
-  if (!ehNativo) return;
+  const N = Notifications;
+  if (!N) return;
 
   try {
     const permitido = await prepararNotificacoes();
     if (!permitido) return;
 
-    await Notifications.cancelAllScheduledNotificationsAsync();
+    await N.cancelAllScheduledNotificationsAsync();
 
     const agora = new Date();
     const ativos = alugueis.filter((a) => a.data_fim);
@@ -123,6 +137,7 @@ export async function sincronizarLembretes(alugueis: AluguelAtivo[]) {
 
       if (vespera > agora) {
         await agendar(
+          N,
           "⏰ Devolução amanhã",
           `O aluguel de "${nome}" termina amanhã (${formatarData(fim)}).`,
           vespera
@@ -131,6 +146,7 @@ export async function sincronizarLembretes(alugueis: AluguelAtivo[]) {
 
       if (ultimoDia > agora) {
         await agendar(
+          N,
           "📕 Último dia de aluguel",
           `Hoje é o último dia para ler "${nome}". Aproveite!`,
           ultimoDia
@@ -144,14 +160,14 @@ export async function sincronizarLembretes(alugueis: AluguelAtivo[]) {
         ? `Que tal continuar lendo "${ativos[0].nome ?? "seu livro"}" hoje?`
         : `Você tem ${ativos.length} livros alugados esperando por você.`;
 
-    await Notifications.scheduleNotificationAsync({
+    await N.scheduleNotificationAsync({
       content: {
         title: "📖 Hora de ler",
         body: corpoLeitura,
         sound: true,
       },
       trigger: {
-        type: Notifications.SchedulableTriggerInputTypes.DAILY,
+        type: N.SchedulableTriggerInputTypes.DAILY,
         hour: HORA_LEITURA,
         minute: 0,
         channelId: CANAL,
@@ -167,7 +183,8 @@ export async function notificarAluguelConfirmado(
   nomeLivro: string,
   dataFim?: string
 ) {
-  if (!ehNativo) return;
+  const N = Notifications;
+  if (!N) return;
 
   try {
     const permitido = await prepararNotificacoes();
@@ -175,7 +192,7 @@ export async function notificarAluguelConfirmado(
 
     const ate = dataFim ? ` até ${formatarData(parseData(dataFim))}` : "";
 
-    await Notifications.scheduleNotificationAsync({
+    await N.scheduleNotificationAsync({
       content: {
         title: "✅ Aluguel confirmado",
         body: `"${nomeLivro}" está disponível para leitura${ate}.`,
