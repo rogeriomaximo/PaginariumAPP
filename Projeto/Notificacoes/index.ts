@@ -1,75 +1,184 @@
 import { Platform } from "react-native";
-import * as Notifications from "expo-notifications";
 
-/**
- * Notificação local (não precisa de servidor de push).
- * Na web não faz nada: o app só usa notificação no Android.
- */
+// Carregado só no celular: na web o módulo emite avisos e não agenda nada.
+const Notifications: typeof import("expo-notifications") =
+  Platform.OS !== "web" ? require("expo-notifications") : (null as any);
 
-if (Platform.OS === "android") {
+// Lembretes locais (agendados no próprio aparelho).
+// Funcionam no Android/iOS. Na web, as funções não fazem nada.
+
+export interface AluguelAtivo {
+  livro_id: number;
+  nome?: string;
+  data_fim?: string; // "YYYY-MM-DD" (ou ISO; só os 10 primeiros caracteres importam)
+}
+
+const CANAL = "paginarium";
+const ehNativo = Platform.OS !== "web";
+
+// Horários dos lembretes
+const HORA_DEVOLUCAO = 9; // 09:00
+const HORA_LEITURA = 20; // 20:00 todos os dias
+
+if (ehNativo) {
   Notifications.setNotificationHandler({
-    handleNotification: async () =>
-      ({
-        shouldShowAlert: true,
-        shouldShowBanner: true,
-        shouldShowList: true,
-        shouldPlaySound: true,
-        shouldSetBadge: false,
-      }) as any,
+    handleNotification: async () => ({
+      shouldPlaySound: true,
+      shouldSetBadge: false,
+      shouldShowBanner: true,
+      shouldShowList: true,
+    }),
   });
 }
 
-const CANAL = "alugueis";
-
-async function prepararCanal() {
-  await Notifications.setNotificationChannelAsync(CANAL, {
-    name: "Aluguéis",
-    importance: Notifications.AndroidImportance.HIGH,
-    vibrationPattern: [0, 250, 250, 250],
-  });
+function parseData(dataFim: string): Date {
+  const [ano, mes, dia] = String(dataFim).substring(0, 10).split("-").map(Number);
+  return new Date(ano, mes - 1, dia);
 }
 
-// Android 13+ exige permissão. Pede só se ainda não foi concedida.
-export async function permitirNotificacoes(): Promise<boolean> {
-  if (Platform.OS !== "android") return false;
+function formatarData(data: Date): string {
+  const d = String(data.getDate()).padStart(2, "0");
+  const m = String(data.getMonth() + 1).padStart(2, "0");
+  return `${d}/${m}/${data.getFullYear()}`;
+}
+
+function comHora(data: Date, hora: number): Date {
+  const nova = new Date(data);
+  nova.setHours(hora, 0, 0, 0);
+  return nova;
+}
+
+export async function prepararNotificacoes(): Promise<boolean> {
+  if (!ehNativo) return false;
 
   try {
-    const atual = await Notifications.getPermissionsAsync();
-    if (atual.granted) return true;
+    if (Platform.OS === "android") {
+      await Notifications.setNotificationChannelAsync(CANAL, {
+        name: "Paginarium",
+        importance: Notifications.AndroidImportance.HIGH,
+        vibrationPattern: [0, 250, 250, 250],
+      });
+    }
 
-    const nova = await Notifications.requestPermissionsAsync();
-    return nova.granted;
-  } catch {
+    const atual = await Notifications.getPermissionsAsync();
+    let status = atual.status;
+
+    if (status !== "granted" && atual.canAskAgain) {
+      status = (await Notifications.requestPermissionsAsync()).status;
+    }
+
+    return status === "granted";
+  } catch (erro) {
+    console.log("Erro ao preparar notificações:", erro);
     return false;
   }
 }
 
-function formatarData(iso?: string): string {
-  if (!iso) return "";
-
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-
-  return d.toLocaleDateString("pt-BR", { timeZone: "UTC" });
+export async function cancelarLembretes() {
+  if (!ehNativo) return;
+  try {
+    await Notifications.cancelAllScheduledNotificationsAsync();
+  } catch (erro) {
+    console.log("Erro ao cancelar lembretes:", erro);
+  }
 }
 
-// Avisa que o livro foi alugado. Nunca lança erro: se falhar, o aluguel continua valendo.
-export async function notificarAluguel(nomeLivro: string, dataFim?: string) {
-  if (Platform.OS !== "android") return;
+async function agendar(titulo: string, corpo: string, quando: Date) {
+  await Notifications.scheduleNotificationAsync({
+    content: { title: titulo, body: corpo, sound: true },
+    trigger: {
+      type: Notifications.SchedulableTriggerInputTypes.DATE,
+      date: quando,
+      channelId: CANAL,
+    },
+  });
+}
+
+// Reagenda TODOS os lembretes com base nos aluguéis ativos.
+// Chame sempre que a lista de aluguéis for carregada.
+export async function sincronizarLembretes(alugueis: AluguelAtivo[]) {
+  if (!ehNativo) return;
 
   try {
-    await prepararCanal();
+    const permitido = await prepararNotificacoes();
+    if (!permitido) return;
 
-    if (!(await permitirNotificacoes())) return;
+    await Notifications.cancelAllScheduledNotificationsAsync();
 
-    const ate = formatarData(dataFim);
+    const agora = new Date();
+    const ativos = alugueis.filter((a) => a.data_fim);
+
+    if (ativos.length === 0) return;
+
+    // 1) DEVOLUÇÃO: 1 dia antes e no último dia, às 09:00
+    for (const aluguel of ativos) {
+      const fim = parseData(aluguel.data_fim as string);
+      const nome = aluguel.nome ?? "seu livro";
+
+      const vespera = comHora(
+        new Date(fim.getFullYear(), fim.getMonth(), fim.getDate() - 1),
+        HORA_DEVOLUCAO
+      );
+      const ultimoDia = comHora(fim, HORA_DEVOLUCAO);
+
+      if (vespera > agora) {
+        await agendar(
+          "⏰ Devolução amanhã",
+          `O aluguel de "${nome}" termina amanhã (${formatarData(fim)}).`,
+          vespera
+        );
+      }
+
+      if (ultimoDia > agora) {
+        await agendar(
+          "📕 Último dia de aluguel",
+          `Hoje é o último dia para ler "${nome}". Aproveite!`,
+          ultimoDia
+        );
+      }
+    }
+
+    // 2) LEITURA: lembrete diário às 20:00 enquanto houver livro alugado
+    const corpoLeitura =
+      ativos.length === 1
+        ? `Que tal continuar lendo "${ativos[0].nome ?? "seu livro"}" hoje?`
+        : `Você tem ${ativos.length} livros alugados esperando por você.`;
 
     await Notifications.scheduleNotificationAsync({
       content: {
-        title: "Livro alugado! 📚",
-        body: ate
-          ? `Você alugou "${nomeLivro}". Disponível até ${ate}.`
-          : `Você alugou "${nomeLivro}". Boa leitura!`,
+        title: "📖 Hora de ler",
+        body: corpoLeitura,
+        sound: true,
+      },
+      trigger: {
+        type: Notifications.SchedulableTriggerInputTypes.DAILY,
+        hour: HORA_LEITURA,
+        minute: 0,
+        channelId: CANAL,
+      },
+    });
+  } catch (erro) {
+    console.log("Erro ao sincronizar lembretes:", erro);
+  }
+}
+
+// 3) ALUGUEL: aviso imediato quando o aluguel é confirmado
+export async function notificarAluguelConfirmado(
+  nomeLivro: string,
+  dataFim?: string
+) {
+  if (!ehNativo) return;
+
+  try {
+    const permitido = await prepararNotificacoes();
+    if (!permitido) return;
+
+    const ate = dataFim ? ` até ${formatarData(parseData(dataFim))}` : "";
+
+    await Notifications.scheduleNotificationAsync({
+      content: {
+        title: "✅ Aluguel confirmado",
+        body: `"${nomeLivro}" está disponível para leitura${ate}.`,
         sound: true,
       },
       trigger: null,

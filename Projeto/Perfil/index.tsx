@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import {
   Alert,
   Image,
@@ -6,7 +6,6 @@ import {
   Platform,
   ScrollView,
   StyleSheet,
-  Switch,
   Text,
   TextInput,
   TouchableOpacity,
@@ -30,14 +29,6 @@ import Logout from "../assets/Logout.png";
 import Opcoes_Clara from "../assets/Opcoes_Clara.png";
 import Opcoes_Escura from "../assets/Opcoes_Escura.png";
 import Fechar from "../assets/Fechar.png";
-
-import {
-  autenticarBiometria,
-  biometriaAtiva,
-  biometriaDisponivel,
-  removerCredenciais,
-  salvarCredenciais,
-} from "../Biometria";
 
 // =====================================================
 // API
@@ -109,14 +100,6 @@ export default function Perfil() {
   const [valorCredito, setValorCredito] = useState("");
   const [adicionandoCredito, setAdicionandoCredito] = useState(false);
   const [msgCredito, setMsgCredito] = useState<Mensagem>(null);
-
-  // Biometria (somente Android)
-  const [bioDisponivel, setBioDisponivel] = useState(false);
-  const [bioAtiva, setBioAtiva] = useState(false);
-  const [pedindoSenhaBio, setPedindoSenhaBio] = useState(false);
-  const [senhaBio, setSenhaBio] = useState("");
-  const [processandoBio, setProcessandoBio] = useState(false);
-  const [msgBio, setMsgBio] = useState<Mensagem>(null);
 
   // Refs para evitar recriar callbacks (e loop de recarregamento)
   const usuarioRef = useRef<Usuario | undefined>(usuario);
@@ -441,115 +424,6 @@ export default function Perfil() {
   };
 
   // ===================================================
-  // BIOMETRIA (ENTRAR NO APP)
-  // ===================================================
-
-  useEffect(() => {
-    async function verificarBiometria() {
-      if (Platform.OS !== "android") return;
-      setBioDisponivel(await biometriaDisponivel());
-      setBioAtiva(await biometriaAtiva());
-    }
-    verificarBiometria();
-  }, []);
-
-  const alternarBiometria = async () => {
-    setMsgBio(null);
-
-    if (bioAtiva) {
-      await removerCredenciais();
-      setBioAtiva(false);
-      setPedindoSenhaBio(false);
-      setMsgBio({ tipo: "sucesso", texto: "Biometria desativada." });
-      return;
-    }
-
-    setSenhaBio("");
-    setPedindoSenhaBio(true);
-  };
-
-  const cancelarAtivacaoBio = () => {
-    setPedindoSenhaBio(false);
-    setSenhaBio("");
-    setMsgBio(null);
-  };
-
-  const confirmarAtivacaoBio = async () => {
-    if (processandoBio) return;
-
-    if (!usuario || !token) {
-      await sessaoExpirada();
-      return;
-    }
-
-    if (!senhaBio) {
-      setMsgBio({ tipo: "erro", texto: "Digite sua senha para continuar." });
-      return;
-    }
-
-    try {
-      setProcessandoBio(true);
-      setMsgBio(null);
-
-      // 1) confere a senha no servidor
-      const res = await fetch(`${BASE}/confirmar-senha`, {
-        method: "POST",
-        cache: "no-store",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ senha: senhaBio }),
-      });
-
-      if (res.status === 401) {
-        await sessaoExpirada();
-        return;
-      }
-
-      if (!res.ok) {
-        setMsgBio({
-          tipo: "erro",
-          texto:
-            res.status === 400
-              ? "Senha incorreta."
-              : await lerErro(res, "Não foi possível confirmar a senha."),
-        });
-        return;
-      }
-
-      // 2) confirma que a pessoa tem biometria no aparelho
-      const ok = await autenticarBiometria(
-        "Confirme sua biometria para ativar o acesso rápido"
-      );
-
-      if (!ok) {
-        setMsgBio({ tipo: "erro", texto: "Biometria não confirmada." });
-        return;
-      }
-
-      // 3) guarda e-mail e senha no cofre seguro do Android
-      await salvarCredenciais(usuario.email, senhaBio);
-
-      setBioAtiva(true);
-      setPedindoSenhaBio(false);
-      setSenhaBio("");
-      setMsgBio({
-        tipo: "sucesso",
-        texto: "Biometria ativada! Use-a na tela de login.",
-      });
-    } catch (erro) {
-      console.log("Erro ao ativar biometria:", erro);
-      setMsgBio({
-        tipo: "erro",
-        texto: "Não foi possível ativar a biometria. Tente novamente.",
-      });
-    } finally {
-      setProcessandoBio(false);
-    }
-  };
-
-  // ===================================================
   // NAVEGAÇÃO
   // ===================================================
 
@@ -663,6 +537,7 @@ export default function Perfil() {
                 <Image
                   source={isDark ? Opcoes_Clara : Opcoes_Escura}
                   style={styles.headerIcon}
+                  resizeMode="contain"
                 />
               </TouchableOpacity>
             )}
@@ -689,13 +564,21 @@ export default function Perfil() {
               onPress={() => setTema((atual) => actualTema(atual))}
               style={[styles.themeButton, { borderColor: cores.borda }]}
             >
-              <Image source={isDark ? Sol : Lua} style={styles.headerIcon} />
+              <Image
+                source={isDark ? Sol : Lua}
+                style={styles.headerIcon}
+                resizeMode="contain"
+              />
             </TouchableOpacity>
             <TouchableOpacity
               onPress={logout}
               style={[styles.logoutButton, { borderColor: cores.vermelho }]}
             >
-              <Image source={Logout} style={styles.logoutIcon} />
+              <Image
+                source={Logout}
+                style={styles.logoutIcon}
+                resizeMode="contain"
+              />
               {!Mobile && (
                 <Text style={{ color: cores.vermelho, fontWeight: "700" }}>
                   Sair
@@ -877,125 +760,6 @@ export default function Perfil() {
               />
             </View>
 
-            {/* SEGURANÇA (biometria: só Android com biometria cadastrada) */}
-            {Platform.OS === "android" && bioDisponivel && (
-              <>
-                <View style={styles.sectionHeader}>
-                  <Text style={styles.sectionEmoji}>🔐</Text>
-                  <Text style={[styles.sectionTitle, { color: cores.texto }]}>
-                    Segurança
-                  </Text>
-                  <View
-                    style={[styles.sectionLine, { backgroundColor: cores.vermelho }]}
-                  />
-                </View>
-
-                <View
-                  style={[
-                    styles.infoPanel,
-                    { backgroundColor: cores.painel, borderColor: cores.borda },
-                  ]}
-                >
-                  <View style={styles.infoRow}>
-                    <View style={styles.infoRowHeader}>
-                      <View style={{ flex: 1, paddingRight: 12 }}>
-                        <Text style={[styles.infoValue, { color: cores.texto }]}>
-                          Entrar com biometria
-                        </Text>
-                        <Text
-                          style={[
-                            styles.infoLabel,
-                            { color: cores.secundario, marginTop: 4 },
-                          ]}
-                        >
-                          Use sua digital ou rosto para entrar no app sem digitar a
-                          senha.
-                        </Text>
-                      </View>
-                      <Switch
-                        value={bioAtiva || pedindoSenhaBio}
-                        onValueChange={alternarBiometria}
-                        disabled={processandoBio}
-                        trackColor={{ false: cores.borda, true: cores.laranja }}
-                        thumbColor="#FFFFFF"
-                      />
-                    </View>
-
-                    {pedindoSenhaBio && (
-                      <View style={{ gap: 10, marginTop: 8 }}>
-                        <Text style={[styles.infoLabel, { color: cores.secundario }]}>
-                          Confirme sua senha para ativar:
-                        </Text>
-                        <TextInput
-                          value={senhaBio}
-                          onChangeText={(t) => {
-                            setSenhaBio(t);
-                            setMsgBio(null);
-                          }}
-                          onSubmitEditing={confirmarAtivacaoBio}
-                          secureTextEntry
-                          autoCapitalize="none"
-                          autoCorrect={false}
-                          editable={!processandoBio}
-                          placeholder="Sua senha"
-                          placeholderTextColor={cores.secundario}
-                          underlineColorAndroid="transparent"
-                          style={[
-                            styles.textInput,
-                            {
-                              backgroundColor: cores.campo,
-                              borderColor: cores.borda,
-                              color: cores.texto,
-                            },
-                          ]}
-                        />
-                        <View style={styles.inlineActions}>
-                          <TouchableOpacity
-                            onPress={confirmarAtivacaoBio}
-                            disabled={processandoBio}
-                            style={[
-                              styles.smallPrimary,
-                              {
-                                backgroundColor: processandoBio
-                                  ? "#626B7B"
-                                  : cores.vermelho,
-                              },
-                            ]}
-                          >
-                            <Text style={styles.primaryButtonText}>
-                              {processandoBio ? "Verificando..." : "Ativar"}
-                            </Text>
-                          </TouchableOpacity>
-                          <TouchableOpacity
-                            onPress={cancelarAtivacaoBio}
-                            disabled={processandoBio}
-                            style={[
-                              styles.smallSecondary,
-                              {
-                                borderColor: cores.borda,
-                                backgroundColor: cores.card,
-                              },
-                            ]}
-                          >
-                            <Text
-                              style={[
-                                styles.secondaryButtonText,
-                                { color: cores.texto },
-                              ]}
-                            >
-                              Cancelar
-                            </Text>
-                          </TouchableOpacity>
-                        </View>
-                      </View>
-                    )}
-
-                    {renderMensagem(msgBio)}
-                  </View>
-                </View>
-              </>
-            )}
-
             {/* SALDO */}
             <View style={styles.sectionHeader}>
               <Text style={styles.sectionEmoji}>💳</Text>
@@ -1148,8 +912,8 @@ export default function Perfil() {
 
       {/* MENU MOBILE */}
       <View
-        pointerEvents={menuVisible ? "auto" : "none"}
         style={{
+          pointerEvents: menuVisible ? "auto" : "none",
           display: menuVisible ? "flex" : "none",
           ...StyleSheet.absoluteFillObject,
           backgroundColor: "rgba(0,0,0,0.65)",
@@ -1261,9 +1025,9 @@ const styles = StyleSheet.create({
   creditValue: { fontSize: 13, fontWeight: "900" },
   themeButton: { borderWidth: 1, borderRadius: 22, width: 42, height: 42, alignItems: "center", justifyContent: "center" },
   headerIconButton: { padding: 5 },
-  headerIcon: { width: 26, height: 26, resizeMode: "contain" },
+  headerIcon: { width: 26, height: 26 },
   logoutButton: { borderWidth: 1, borderRadius: 20, paddingHorizontal: 11, paddingVertical: 8, flexDirection: "row", alignItems: "center", gap: 6 },
-  logoutIcon: { width: 19, height: 19, resizeMode: "contain" },
+  logoutIcon: { width: 19, height: 19 },
   pageHeading: { borderWidth: 1, borderRadius: 18, padding: 22, flexDirection: "row", alignItems: "center", gap: 18, marginBottom: 28 },
   avatar: { width: 76, height: 76, borderRadius: 38, alignItems: "center", justifyContent: "center" },
   avatarText: { color: "#FFFFFF", fontSize: 34, fontWeight: "900" },

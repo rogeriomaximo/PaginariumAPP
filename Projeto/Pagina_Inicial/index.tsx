@@ -28,6 +28,20 @@ import { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { SafeAreaView } from "react-native-safe-area-context";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { usePWAInstall } from "../hooks/usePWAInstall";
+import CapaLivro from "../CapaLivro/index";
+
+import {
+  AluguelAtivo,
+  cancelarLembretes,
+  notificarAluguelConfirmado,
+  prepararNotificacoes,
+  sincronizarLembretes,
+} from "../Notificacoes/index";
+import {
+  ModoAutenticacao,
+  autenticarBiometria,
+  detectarModoAutenticacao,
+} from "../Autenticacao/index";
 
 import Lua from "../assets/Lua_PixelArt.png";
 import Sol from "../assets/Sol_PixelArt.png";
@@ -44,6 +58,16 @@ import Lupa from "../assets/Lupa.png";
 const BASE = "https://paginariumapi.onrender.com";
 
 const ALUGUEL_PENDENTE_KEY = "aluguel_pendente";
+
+// A API aceita aluguel de 1 a 24 meses.
+const MESES_MAXIMO = 24;
+
+// O hook de instalação PWA só existe na web.
+// No Android/iOS usamos um substituto que não faz nada.
+const useInstalacaoPWA =
+  Platform.OS === "web"
+    ? usePWAInstall
+    : () => ({ isInstallable: false, install: () => {} });
 
 // =====================================================
 // RESOLVER URL DA CAPA
@@ -109,6 +133,8 @@ type NavigationProps = NativeStackNavigationProp<RootStackParamList>;
 
 type InicioRouteProp = RouteProp<RootStackParamList, "Inicio">;
 
+type Aviso = { tipo: "sucesso" | "erro"; texto: string } | null;
+
 // =====================================================
 // COMPONENTE
 // =====================================================
@@ -162,6 +188,21 @@ export default function Inicio() {
 
   const [inserir_valor, setInserirValor] = useState("");
 
+  // Confirmação de identidade (biometria / senha)
+  const [modoAuth, setModoAuth] = useState<ModoAutenticacao>("senha");
+  const [etapaSenha, setEtapaSenha] = useState(false);
+  const [senhaConfirmacao, setSenhaConfirmacao] = useState("");
+  const [erroAuth, setErroAuth] = useState("");
+  const [verificandoAuth, setVerificandoAuth] = useState(false);
+
+  // Aviso na tela (Alert.alert não aparece na web)
+  const [aviso, setAviso] = useState<Aviso>(null);
+  const avisoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Referência sempre atualizada da lista de livros
+  const livrosRef = useRef<Livro[]>([]);
+  livrosRef.current = livros;
+
   // ===================================================
   // TEMA
   // ===================================================
@@ -179,6 +220,7 @@ export default function Inicio() {
         vermelho: "#FF2638",
         laranja: "#FF8126",
         campo: "#080F1E",
+        verde: "#25A66A",
       }
     : {
         fundo: "#F2F4F9",
@@ -190,13 +232,28 @@ export default function Inicio() {
         vermelho: "#D91F35",
         laranja: "#C95D08",
         campo: "#F7F8FC",
+        verde: "#1B8A57",
       };
 
   // ===================================================
-  // PWA
+  // PWA (somente web)
   // ===================================================
 
-  const { isInstallable, install } = usePWAInstall();
+  const { isInstallable, install } = useInstalacaoPWA();
+
+  // ===================================================
+  // AVISOS
+  // ===================================================
+
+  function mostrarAviso(tipo: "sucesso" | "erro", texto: string) {
+    if (avisoTimer.current) {
+      clearTimeout(avisoTimer.current);
+    }
+
+    setAviso({ tipo, texto });
+
+    avisoTimer.current = setTimeout(() => setAviso(null), 6000);
+  }
 
   // ===================================================
   // NAVEGAÇÃO ENTRE TELAS
@@ -219,6 +276,8 @@ export default function Inicio() {
   // ===================================================
 
   async function logout() {
+    await cancelarLembretes();
+
     await AsyncStorage.removeItem("token");
     await AsyncStorage.removeItem("usuario");
 
@@ -230,19 +289,15 @@ export default function Inicio() {
   // ===================================================
 
   async function handleUnauthorized() {
+    await cancelarLembretes();
+
     await AsyncStorage.removeItem("token");
     await AsyncStorage.removeItem("usuario");
 
-    Alert.alert(
-      "Sessão expirada",
-      "Sua sessão expirou. Faça login novamente.",
-      [
-        {
-          text: "OK",
-          onPress: () => navigation.navigate("Login"),
-        },
-      ]
-    );
+    // Navega primeiro: o Alert não executa onPress na web.
+    navigation.navigate("Login");
+
+    Alert.alert("Sessão expirada", "Sua sessão expirou. Faça login novamente.");
   }
 
   // ===================================================
@@ -324,7 +379,7 @@ export default function Inicio() {
   }
 
   // ===================================================
-  // CARREGAR ALUGUÉIS ATIVOS
+  // CARREGAR ALUGUÉIS ATIVOS (+ LEMBRETES)
   // ===================================================
 
   async function carregarAlugueisAtivos(tkn: string) {
@@ -355,19 +410,26 @@ export default function Inicio() {
 
       const hoje = obterDataHoje();
 
-      const idsAtivos = new Set<number>(
-        data
-          .filter((aluguel: any) => {
-            if (!aluguel.data_fim) {
-              return false;
-            }
+      const ativos = data.filter((aluguel: any) => {
+        if (!aluguel.data_fim) {
+          return false;
+        }
 
-            return String(aluguel.data_fim).substring(0, 10) >= hoje;
-          })
-          .map((aluguel: any) => Number(aluguel.livro_id))
+        return String(aluguel.data_fim).substring(0, 10) >= hoje;
+      });
+
+      setLivrosAlugadosIds(
+        new Set<number>(ativos.map((aluguel: any) => Number(aluguel.livro_id)))
       );
 
-      setLivrosAlugadosIds(idsAtivos);
+      // Lembretes de devolução e de leitura (Android/iOS)
+      const paraLembretes: AluguelAtivo[] = ativos.map((aluguel: any) => ({
+        livro_id: Number(aluguel.livro_id),
+        nome: aluguel.nome,
+        data_fim: String(aluguel.data_fim).substring(0, 10),
+      }));
+
+      await sincronizarLembretes(paraLembretes);
     } catch (erro) {
       console.log("❌ Erro ao carregar aluguéis:", erro);
     }
@@ -500,6 +562,14 @@ export default function Inicio() {
   }, []);
 
   // ===================================================
+  // PERMISSÃO DE NOTIFICAÇÕES (Android/iOS)
+  // ===================================================
+
+  useEffect(() => {
+    prepararNotificacoes();
+  }, []);
+
+  // ===================================================
   // LIVROS INICIALMENTE
   // ===================================================
 
@@ -516,6 +586,24 @@ export default function Inicio() {
       carregarAlugueisAtivos(token);
     }
   }, [token]);
+
+  // ===================================================
+  // MODO DE CONFIRMAÇÃO (biometria x senha)
+  // ===================================================
+
+  useEffect(() => {
+    let ativo = true;
+
+    detectarModoAutenticacao().then((modo) => {
+      if (ativo) {
+        setModoAuth(modo);
+      }
+    });
+
+    return () => {
+      ativo = false;
+    };
+  }, [livroSelecionado]);
 
   // ===================================================
   // SINCRONIZAÇÃO AO VOLTAR
@@ -616,6 +704,28 @@ export default function Inicio() {
 
   const saldoInsuficiente = totalAluguel > creditoAtual;
 
+  const ocupado = carregando || verificandoAuth;
+
+  // ===================================================
+  // MODAL DE ALUGUEL
+  // ===================================================
+
+  function abrirModalAluguel(livro: Livro) {
+    setInserirValor("");
+    setEtapaSenha(false);
+    setSenhaConfirmacao("");
+    setErroAuth("");
+    setLivroSelecionado(livro);
+  }
+
+  function fecharModalAluguel() {
+    setLivroSelecionado(null);
+    setInserirValor("");
+    setEtapaSenha(false);
+    setSenhaConfirmacao("");
+    setErroAuth("");
+  }
+
   // ===================================================
   // ALUGUEL PENDENTE / OFFLINE FIRST
   // ===================================================
@@ -640,7 +750,8 @@ export default function Inicio() {
     tkn: string,
     data: any,
     mesesAluguel: number,
-    mostrarSucesso: boolean = true
+    mostrarSucesso: boolean = true,
+    livroId?: number
   ) {
     await limparAluguelPendente();
 
@@ -659,17 +770,27 @@ export default function Inicio() {
       return atualizado;
     });
 
+    // Recarrega aluguéis e reagenda os lembretes de devolução/leitura
     await carregarAlugueisAtivos(tkn);
 
     await carregarLivros();
 
+    // Notificação imediata de aluguel confirmado
+    const idLivro = Number(data?.aluguel?.livro_id ?? livroId);
+    const livro = livrosRef.current.find((l) => l.id === idLivro);
+
+    await notificarAluguelConfirmado(
+      livro?.nome ?? "Seu livro",
+      data?.aluguel?.data_fim
+        ? String(data.aluguel.data_fim).substring(0, 10)
+        : undefined
+    );
+
     if (mostrarSucesso) {
-      setLivroSelecionado(null);
+      fecharModalAluguel();
 
-      setInserirValor("");
-
-      Alert.alert(
-        "Sucesso!",
+      mostrarAviso(
+        "sucesso",
         `Livro alugado por ${mesesAluguel} ${
           mesesAluguel === 1 ? "mês" : "meses"
         }!`
@@ -747,7 +868,8 @@ export default function Inicio() {
               tkn,
               data,
               pendente.meses,
-              mostrarSucesso
+              mostrarSucesso,
+              pendente.livro_id
             );
 
             return;
@@ -777,14 +899,9 @@ export default function Inicio() {
             await carregarLivros();
 
             if (mostrarSucesso) {
-              setLivroSelecionado(null);
+              fecharModalAluguel();
 
-              setInserirValor("");
-
-              Alert.alert(
-                "Aluguel confirmado",
-                "O livro já foi registrado para você."
-              );
+              mostrarAviso("sucesso", "O livro já foi registrado para você.");
             }
 
             return;
@@ -795,8 +912,8 @@ export default function Inicio() {
           await limparAluguelPendente();
 
           if (mostrarSucesso) {
-            Alert.alert(
-              "Erro",
+            mostrarAviso(
+              "erro",
               typeof data === "string" ? data : "Erro ao alugar"
             );
           }
@@ -818,7 +935,23 @@ export default function Inicio() {
   }
 
   // ===================================================
-  // CONFIRMAR ALUGUEL
+  // EXECUTAR ALUGUEL (depois de confirmar identidade)
+  // ===================================================
+
+  async function executarAluguel() {
+    if (!livroSelecionado || !token || isNaN(meses) || meses <= 0) {
+      return;
+    }
+
+    // Salva antes de tentar a API. Se a internet cair ou
+    // o aplicativo for fechado, a solicitação não é perdida.
+    await salvarAluguelPendente(livroSelecionado.id, meses);
+
+    await processarAluguelPendente(token, true);
+  }
+
+  // ===================================================
+  // CONFIRMAR ALUGUEL: biometria (celular) ou senha
   // ===================================================
 
   async function confirmarAluguel() {
@@ -836,15 +969,90 @@ export default function Inicio() {
       return;
     }
 
-    const livroId = livroSelecionado.id;
+    setErroAuth("");
 
-    const mesesAluguel = meses;
+    // Celular com biometria cadastrada: pede biometria.
+    if (modoAuth === "biometria") {
+      setVerificandoAuth(true);
 
-    // Salva antes de tentar a API. Se a internet cair ou
-    // o aplicativo for fechado, a solicitação não é perdida.
-    await salvarAluguelPendente(livroId, mesesAluguel);
+      const ok = await autenticarBiometria(
+        `Confirme para alugar "${livroSelecionado.nome}"`
+      );
 
-    await processarAluguelPendente(token, true);
+      setVerificandoAuth(false);
+
+      if (ok) {
+        await executarAluguel();
+        return;
+      }
+
+      setErroAuth("Biometria não confirmada. Use sua senha para continuar.");
+    }
+
+    // Sem biometria (ou biometria recusada) e web: pede a senha da conta.
+    setSenhaConfirmacao("");
+    setEtapaSenha(true);
+  }
+
+  async function confirmarComSenha() {
+    if (!usuario || !token) {
+      await handleUnauthorized();
+      return;
+    }
+
+    if (!senhaConfirmacao) {
+      setErroAuth("Digite sua senha.");
+      return;
+    }
+
+    try {
+      setVerificandoAuth(true);
+      setErroAuth("");
+
+      const res = await fetch(`${BASE}/confirmar-senha`, {
+        method: "POST",
+        cache: "no-store",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ senha: senhaConfirmacao }),
+      });
+
+      // Nesta rota, 401 = token expirado. Senha errada volta 400 e
+      // excesso de tentativas volta 429 (mensagens tratadas abaixo).
+      if (res.status === 401) {
+        await handleUnauthorized();
+        return;
+      }
+
+      if (!res.ok) {
+        let mensagem = "Não foi possível confirmar a senha.";
+
+        try {
+          const corpo = await res.json();
+          if (typeof corpo === "string") {
+            mensagem = corpo;
+          }
+        } catch {
+          // mantém a mensagem padrão
+        }
+
+        setErroAuth(mensagem);
+        return;
+      }
+
+      setSenhaConfirmacao("");
+      setEtapaSenha(false);
+      setVerificandoAuth(false);
+
+      await executarAluguel();
+    } catch (erro) {
+      console.log("❌ Erro ao confirmar senha:", erro);
+      setErroAuth("Sem conexão com o servidor. Tente novamente.");
+    } finally {
+      setVerificandoAuth(false);
+    }
   }
 
   // ===================================================
@@ -866,11 +1074,8 @@ export default function Inicio() {
           },
         ]}
       >
-        <Image
-          source={
-            item.capa_url ? { uri: resolverCapaUrl(item.capa_url) } : undefined
-          }
-          resizeMode="cover"
+        <CapaLivro
+          uri={resolverCapaUrl(item.capa_url)}
           style={styles.bookCover}
         />
 
@@ -895,10 +1100,7 @@ export default function Inicio() {
 
           <TouchableOpacity
             disabled={jaAlugado}
-            onPress={() => {
-              setInserirValor("");
-              setLivroSelecionado(item);
-            }}
+            onPress={() => abrirModalAluguel(item)}
             style={[
               styles.rentButton,
               {
@@ -914,6 +1116,13 @@ export default function Inicio() {
       </View>
     );
   };
+
+  const confirmarDesabilitado =
+    saldoInsuficiente ||
+    !inserir_valor ||
+    isNaN(meses) ||
+    meses <= 0 ||
+    ocupado;
 
   return (
     <KeyboardAvoidingView
@@ -1025,6 +1234,7 @@ export default function Inicio() {
                 <Image
                   source={isDark ? Opcoes_Clara : Opcoes_Escura}
                   style={styles.headerIcon}
+                  resizeMode="contain"
                 />
               </TouchableOpacity>
             ) : null}
@@ -1063,14 +1273,22 @@ export default function Inicio() {
               }
               style={[styles.themeButton, { borderColor: cores.borda }]}
             >
-              <Image source={isDark ? Sol : Lua} style={styles.headerIcon} />
+              <Image
+                source={isDark ? Sol : Lua}
+                style={styles.headerIcon}
+                resizeMode="contain"
+              />
             </TouchableOpacity>
 
             <TouchableOpacity
               onPress={logout}
               style={[styles.logoutButton, { borderColor: cores.vermelho }]}
             >
-              <Image source={Logout} style={styles.logoutIcon} />
+              <Image
+                source={Logout}
+                style={styles.logoutIcon}
+                resizeMode="contain"
+              />
 
               {!Mobile && (
                 <Text
@@ -1095,6 +1313,38 @@ export default function Inicio() {
             keyboardShouldPersistTaps="handled"
             nestedScrollEnabled
           >
+            {/* AVISO (sucesso / erro) */}
+            {aviso && (
+              <View
+                style={[
+                  styles.aviso,
+                  {
+                    backgroundColor: cores.painel,
+                    borderColor:
+                      aviso.tipo === "sucesso" ? cores.verde : cores.vermelho,
+                  },
+                ]}
+              >
+                <Text
+                  style={{
+                    flex: 1,
+                    fontSize: 12,
+                    fontWeight: "800",
+                    color:
+                      aviso.tipo === "sucesso" ? cores.verde : cores.vermelho,
+                  }}
+                >
+                  {aviso.texto}
+                </Text>
+
+                <TouchableOpacity onPress={() => setAviso(null)}>
+                  <Text style={{ color: cores.secundario, fontWeight: "900" }}>
+                    ✕
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
             {/* PESQUISA */}
             <View
               style={[
@@ -1107,7 +1357,9 @@ export default function Inicio() {
             >
               <Image
                 source={Lupa}
-                style={[styles.searchIcon, { tintColor: cores.secundario }]}
+                style={styles.searchIcon}
+                resizeMode="contain"
+                tintColor={cores.secundario}
               />
 
               <TextInput
@@ -1125,7 +1377,12 @@ export default function Inicio() {
                 onPress={pesquisar}
                 style={[styles.searchSubmit, { backgroundColor: cores.laranja }]}
               >
-                <Image source={Lupa} style={styles.searchSubmitIcon} />
+                <Image
+                  source={Lupa}
+                  style={styles.searchSubmitIcon}
+                  resizeMode="contain"
+                  tintColor="#10101C"
+                />
               </TouchableOpacity>
             </View>
 
@@ -1140,12 +1397,9 @@ export default function Inicio() {
               ]}
             >
               {livroDestaque?.capa_url ? (
-                <Image
-                  source={{
-                    uri: resolverCapaUrl(livroDestaque.capa_url),
-                  }}
+                <CapaLivro
+                  uri={resolverCapaUrl(livroDestaque.capa_url)}
                   style={styles.heroImage}
-                  resizeMode="cover"
                 />
               ) : null}
 
@@ -1183,10 +1437,7 @@ export default function Inicio() {
 
                 {livroDestaque && (
                   <TouchableOpacity
-                    onPress={() => {
-                      setInserirValor("");
-                      setLivroSelecionado(livroDestaque);
-                    }}
+                    onPress={() => abrirModalAluguel(livroDestaque)}
                     style={[styles.heroButton, { borderColor: cores.laranja }]}
                   >
                     <Text
@@ -1297,12 +1548,9 @@ export default function Inicio() {
                 style={[styles.recommendCoverFrame, { borderColor: cores.borda }]}
               >
                 {livroDestaque?.capa_url ? (
-                  <Image
-                    source={{
-                      uri: resolverCapaUrl(livroDestaque.capa_url),
-                    }}
+                  <CapaLivro
+                    uri={resolverCapaUrl(livroDestaque.capa_url)}
                     style={styles.recommendCover}
-                    resizeMode="cover"
                   />
                 ) : (
                   <Text style={{ fontSize: 42 }}>📚</Text>
@@ -1329,10 +1577,7 @@ export default function Inicio() {
 
                 {livroDestaque && (
                   <TouchableOpacity
-                    onPress={() => {
-                      setInserirValor("");
-                      setLivroSelecionado(livroDestaque);
-                    }}
+                    onPress={() => abrirModalAluguel(livroDestaque)}
                     style={[
                       styles.openPdfButton,
                       { backgroundColor: cores.vermelho },
@@ -1352,7 +1597,7 @@ export default function Inicio() {
         visible={livroSelecionado !== null}
         transparent
         animationType="fade"
-        onRequestClose={() => !carregando && setLivroSelecionado(null)}
+        onRequestClose={() => !ocupado && fecharModalAluguel()}
       >
         <View style={styles.modalBackdrop}>
           <View
@@ -1365,8 +1610,8 @@ export default function Inicio() {
             ]}
           >
             <TouchableOpacity
-              disabled={carregando}
-              onPress={() => setLivroSelecionado(null)}
+              disabled={ocupado}
+              onPress={fecharModalAluguel}
               style={styles.modalClose}
             >
               <Image source={Fechar} style={{ width: 22, height: 22 }} />
@@ -1376,97 +1621,194 @@ export default function Inicio() {
               {livroSelecionado?.nome}
             </Text>
 
-            <TextInput
-              placeholder="Por quantos meses deseja alugar?"
-              placeholderTextColor={cores.secundario}
-              value={inserir_valor}
-              onChangeText={(text) =>
-                setInserirValor(
-                  text
-                    .replace(/[^0-9]/g, "")
-                    .replace(/^0+/, "")
-                    .slice(0, 4)
-                )
-              }
-              keyboardType="numeric"
-              maxLength={4}
-              style={[
-                styles.monthInput,
-                {
-                  backgroundColor: cores.campo,
-                  borderColor: cores.borda,
-                  color: cores.texto,
-                },
-              ]}
-            />
+            {!etapaSenha ? (
+              <>
+                <TextInput
+                  placeholder={`Por quantos meses? (1 a ${MESES_MAXIMO})`}
+                  placeholderTextColor={cores.secundario}
+                  value={inserir_valor}
+                  onChangeText={(text) => {
+                    const apenasNumeros = text
+                      .replace(/[^0-9]/g, "")
+                      .replace(/^0+/, "")
+                      .slice(0, 2);
 
-            {inserir_valor !== "" &&
-              livroSelecionado &&
-              !isNaN(meses) &&
-              meses > 0 && (
+                    setInserirValor(
+                      Number(apenasNumeros) > MESES_MAXIMO
+                        ? String(MESES_MAXIMO)
+                        : apenasNumeros
+                    );
+                  }}
+                  keyboardType="numeric"
+                  maxLength={2}
+                  style={[
+                    styles.monthInput,
+                    {
+                      backgroundColor: cores.campo,
+                      borderColor: cores.borda,
+                      color: cores.texto,
+                    },
+                  ]}
+                />
+
+                {inserir_valor !== "" &&
+                  livroSelecionado &&
+                  !isNaN(meses) &&
+                  meses > 0 && (
+                    <Text
+                      style={[
+                        styles.calculationText,
+                        { color: cores.secundario },
+                      ]}
+                    >
+                      {meses} {meses === 1 ? "mês" : "meses"} × R${" "}
+                      {Number(livroSelecionado.valor).toFixed(2)} ={" "}
+                      <Text
+                        style={{
+                          color: saldoInsuficiente
+                            ? cores.vermelho
+                            : cores.laranja,
+                          fontWeight: "800",
+                        }}
+                      >
+                        R$ {totalAluguel.toFixed(2)}
+                      </Text>
+                    </Text>
+                  )}
+
+                {saldoInsuficiente && inserir_valor !== "" && meses > 0 && (
+                  <Text
+                    style={[styles.balanceMessage, { color: cores.vermelho }]}
+                  >
+                    Saldo insuficiente. Você possui R${" "}
+                    {creditoAtual.toFixed(2)} de crédito.
+                  </Text>
+                )}
+
+                {!saldoInsuficiente && inserir_valor !== "" && meses > 0 && (
+                  <Text
+                    style={[styles.balanceMessage, { color: cores.verde }]}
+                  >
+                    Saldo após aluguel: R${" "}
+                    {(creditoAtual - totalAluguel).toFixed(2)}
+                  </Text>
+                )}
+
+                {erroAuth !== "" && (
+                  <Text
+                    style={[styles.balanceMessage, { color: cores.vermelho }]}
+                  >
+                    {erroAuth}
+                  </Text>
+                )}
+
+                <TouchableOpacity
+                  style={[
+                    styles.confirmButton,
+                    {
+                      backgroundColor: confirmarDesabilitado
+                        ? "#626B7B"
+                        : cores.vermelho,
+                    },
+                  ]}
+                  disabled={confirmarDesabilitado}
+                  onPress={confirmarAluguel}
+                >
+                  <Text style={styles.rentButtonText}>
+                    {carregando
+                      ? "Processando..."
+                      : verificandoAuth
+                      ? "Verificando..."
+                      : modoAuth === "biometria"
+                      ? "🔒 Confirmar com biometria"
+                      : "🔒 Confirmar com senha"}
+                  </Text>
+                </TouchableOpacity>
+
+                {carregando && (
+                  <Text
+                    style={[styles.processingText, { color: cores.secundario }]}
+                  >
+                    Se a conexão cair, a solicitação continuará aguardando a
+                    internet.
+                  </Text>
+                )}
+              </>
+            ) : (
+              <>
                 <Text
                   style={[styles.calculationText, { color: cores.secundario }]}
                 >
-                  {meses} {meses === 1 ? "mês" : "meses"} × R${" "}
-                  {Number(livroSelecionado.valor).toFixed(2)} ={" "}
-                  <Text
-                    style={{
-                      color: saldoInsuficiente ? cores.vermelho : cores.laranja,
-                      fontWeight: "800",
-                    }}
-                  >
-                    R$ {totalAluguel.toFixed(2)}
-                  </Text>
+                  Para sua segurança, confirme sua senha para alugar este livro
+                  por R$ {totalAluguel.toFixed(2)}.
                 </Text>
-              )}
 
-            {saldoInsuficiente && inserir_valor !== "" && meses > 0 && (
-              <Text style={[styles.balanceMessage, { color: cores.vermelho }]}>
-                Saldo insuficiente. Você possui R$ {creditoAtual.toFixed(2)} de
-                crédito.
-              </Text>
-            )}
+                <TextInput
+                  value={senhaConfirmacao}
+                  onChangeText={(texto) => {
+                    setSenhaConfirmacao(texto);
+                    setErroAuth("");
+                  }}
+                  onSubmitEditing={confirmarComSenha}
+                  secureTextEntry
+                  autoFocus
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  editable={!verificandoAuth}
+                  returnKeyType="done"
+                  placeholder="Sua senha"
+                  placeholderTextColor={cores.secundario}
+                  underlineColorAndroid="transparent"
+                  style={[
+                    styles.monthInput,
+                    {
+                      backgroundColor: cores.campo,
+                      borderColor: cores.borda,
+                      color: cores.texto,
+                    },
+                  ]}
+                />
 
-            {!saldoInsuficiente && inserir_valor !== "" && meses > 0 && (
-              <Text style={[styles.balanceMessage, { color: "#25A66A" }]}>
-                Saldo após aluguel: R${" "}
-                {(creditoAtual - totalAluguel).toFixed(2)}
-              </Text>
-            )}
+                {erroAuth !== "" && (
+                  <Text
+                    style={[styles.balanceMessage, { color: cores.vermelho }]}
+                  >
+                    {erroAuth}
+                  </Text>
+                )}
 
-            <TouchableOpacity
-              style={[
-                styles.confirmButton,
-                {
-                  backgroundColor:
-                    saldoInsuficiente ||
-                    !inserir_valor ||
-                    isNaN(meses) ||
-                    meses <= 0 ||
-                    carregando
-                      ? "#626B7B"
-                      : cores.vermelho,
-                },
-              ]}
-              disabled={
-                saldoInsuficiente ||
-                !inserir_valor ||
-                isNaN(meses) ||
-                meses <= 0 ||
-                carregando
-              }
-              onPress={confirmarAluguel}
-            >
-              <Text style={styles.rentButtonText}>
-                {carregando ? "Processando..." : "Confirmar aluguel"}
-              </Text>
-            </TouchableOpacity>
+                <TouchableOpacity
+                  style={[
+                    styles.confirmButton,
+                    {
+                      backgroundColor:
+                        verificandoAuth || !senhaConfirmacao
+                          ? "#626B7B"
+                          : cores.vermelho,
+                    },
+                  ]}
+                  disabled={verificandoAuth || !senhaConfirmacao}
+                  onPress={confirmarComSenha}
+                >
+                  <Text style={styles.rentButtonText}>
+                    {verificandoAuth ? "Verificando..." : "Confirmar e alugar"}
+                  </Text>
+                </TouchableOpacity>
 
-            {carregando && (
-              <Text style={[styles.processingText, { color: cores.secundario }]}>
-                Se a conexão cair, a solicitação continuará aguardando a
-                internet.
-              </Text>
+                <TouchableOpacity
+                  disabled={verificandoAuth}
+                  onPress={() => {
+                    setEtapaSenha(false);
+                    setSenhaConfirmacao("");
+                    setErroAuth("");
+                  }}
+                  style={styles.backLink}
+                >
+                  <Text style={{ color: cores.secundario, fontSize: 12 }}>
+                    ‹ Voltar
+                  </Text>
+                </TouchableOpacity>
+              </>
             )}
           </View>
         </View>
@@ -1693,7 +2035,6 @@ const styles = StyleSheet.create({
   headerIcon: {
     width: 26,
     height: 26,
-    resizeMode: "contain",
   },
 
   logoutButton: {
@@ -1709,7 +2050,17 @@ const styles = StyleSheet.create({
   logoutIcon: {
     width: 19,
     height: 19,
-    resizeMode: "contain",
+  },
+
+  aviso: {
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    marginBottom: 14,
   },
 
   searchBar: {
@@ -1726,7 +2077,6 @@ const styles = StyleSheet.create({
   searchIcon: {
     width: 21,
     height: 21,
-    resizeMode: "contain",
   },
 
   searchInput: {
@@ -1735,7 +2085,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 10,
     fontSize: 13,
-    outlineStyle: "none" as any,
+    // "outlineStyle" só existe na web; no Android é ignorado.
+    ...(Platform.OS === "web" ? ({ outlineStyle: "none" } as any) : {}),
   },
 
   searchSubmit: {
@@ -1750,8 +2101,6 @@ const styles = StyleSheet.create({
   searchSubmitIcon: {
     width: 25,
     height: 25,
-    resizeMode: "contain",
-    tintColor: "#10101C",
   },
 
   hero: {
@@ -2000,6 +2349,11 @@ const styles = StyleSheet.create({
     padding: 13,
     alignItems: "center",
     marginTop: 4,
+  },
+
+  backLink: {
+    alignItems: "center",
+    paddingVertical: 12,
   },
 
   processingText: {
