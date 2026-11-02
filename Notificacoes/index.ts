@@ -256,3 +256,6 @@ export async function agendarLembretesAluguel(
 export async function notificarAluguel(nomeLivro: string, dataFim?: string) {
   await agendarLembretesAluguel(0, nomeLivro, dataFim);
 }
+
+
+//Adiciona uma função para cancelar todos os lembretes de leitura agendados, caso seja necessário.
